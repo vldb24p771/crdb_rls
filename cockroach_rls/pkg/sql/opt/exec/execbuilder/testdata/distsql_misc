@@ -1,0 +1,192 @@
+# LogicTest: 5node
+
+subtest scrub
+
+# TODO(radu): rework or remove these tests (the inner ORDER BY is ignored by
+# the optimizer).
+#
+# # Verify the index check execution plan uses a merge join.
+#
+# statement ok
+# CREATE TABLE test (k INT PRIMARY KEY, v INT, data INT, INDEX secondary (v) STORING (data))
+#
+# query T
+# EXPLAIN (DISTSQL)
+#     SELECT leftside.v, leftside.k, leftside.data, rightside.v, rightside.k, rightside.data
+#     FROM
+#       (SELECT v,k,data FROM test@{FORCE_INDEX=[1]} ORDER BY v,k,data) AS leftside
+#     FULL OUTER JOIN
+#       (SELECT v,k,data FROM test@{FORCE_INDEX=[2]} ORDER BY v,k,data) AS rightside
+#       ON leftside.v = rightside.v AND leftside.k = rightside.k AND leftside.data = rightside.data
+#     WHERE (leftside.k IS NULL) OR
+#           (rightside.k IS NULL)
+# ----
+# https://cockroachdb.github.io/distsqlplan/decode.html#eJyckc2K2zAQgO99CjGnLBlIJDs9CAq6dCFLGpdscio-uNY0a3AkM5Khy5J3L45hNw5x2vQ4I33zzc8bOG9pXRwogP4BEnKEhn1JIXjuUv2Hpf0Neo5QuaaNXTpHKD0T6DeIVawJNGyLnzVtqLDEszkgWIpFVZ_KNlwdCn41kUIEhKyNWhiFRqJJID8i-DZ-FA6x2BNoecR_lz97jsQzOfQaOUWjpmiS6ahG3aM5n1ENXYFK7-zdUyb_MWUyPiXCoYjli6jJaaFGremo9UPWOs-WmOzAlnfk375caf0b8Z6efOWIZ-mw_-1rQ1o87lYrke22XzfiKVuuAaGmX3FyNtzDF672L8MUIDxWdSTWYmKUWD6L9W61ehDZRkzM4j1-P4fE7iIJmhTNAs3n0Q0t7rnLhkLjXaDLTV2tPO_WQ3ZP_bqDb7mk7-zLk6YPsxN3SlgKsX-VfbB0_VPX4Dksb8LpAJaXsLoJJ7fNyR1mdQmnN-HFhTk_fvoTAAD__3P7gDg=
+#
+# # Verify the foreign key check execution plan uses a merge join.
+#
+# statement ok
+# CREATE TABLE parent (
+#   id INT PRIMARY KEY,
+#   id2 INT,
+#   UNIQUE INDEX (id, id2)
+# )
+#
+# statement ok
+# CREATE TABLE child (
+#   child_id INT PRIMARY KEY,
+#   id INT,
+#   id2 INT,
+#   FOREIGN KEY (id, id2) REFERENCES parent (id, id2)
+# )
+#
+# query T
+# EXPLAIN (DISTSQL)
+#     SELECT p.child_id, p.id, p.id2
+#     FROM
+#       (SELECT child_id, id, id2 FROM child@{NO_INDEX_JOIN} ORDER BY id, id2) AS p
+#     FULL OUTER JOIN
+#       (SELECT id, id2 FROM parent@{FORCE_INDEX=[2]} ORDER BY id, id2) AS c
+#       ON p.id = c.id AND p.id2 = c.id2
+#     WHERE (p.id IS NOT NULL OR p.id2 IS NOT NULL) AND
+#           c.id IS NULL AND c.id2 IS NULL
+# ----
+# https://cockroachdb.github.io/distsqlplan/decode.html#eJycklFrnTAUx9_3KcJ58nID1bi9BAYZbAWL0-G8T0PEmXNtqEskidBS_O7DCGstvRvdY345__wO5-QRtJFYdL_QAf8BCTQUJmt6dM7YFW0FmbwHHlNQepr9ihsKvbEI_BG88iMCh7r7OWKFnUR7FQMFib5TY3i2v1WjbLvZm1Zpifft-a5VsrV4bqfOovYiVECzUDCzf3I43w0IPFno__WR7PvYZKtaSdbe4YPYyEUxuyh-8s3aWIkW5c7VrMl_lbzS_Ve0A94YpdFesX339cOEnFyf8pyUp_pLRW7KrAAKI559JNiRivR4-GjVcOsjkRypYMcDULhWo0fLSRRFgpHsOynKmhSnPD-QsiKRSHfsQD4Vn0kk3gf6nHz4Q4BCOXtOREIFoyK9OL70LXur0E1GO3w5xldfjtfZoRxw24Uzs-3xmzV90GzHMuQCkOj8dsu2Q6bDVfhYz8PJG8LsZZj9NZzuwvHSLO9-BwAA__9_viDb
+
+subtest stats
+
+statement ok
+CREATE TABLE data (a INT, b INT, c FLOAT, d DECIMAL, PRIMARY KEY (a, b, c, d))
+
+# Split into ten parts.
+statement ok
+ALTER TABLE data SPLIT AT SELECT i FROM generate_series(1, 9) AS g(i)
+
+# Relocate the ten parts to the five nodes.
+statement ok
+ALTER TABLE data EXPERIMENTAL_RELOCATE
+  SELECT ARRAY[i%5+1], i FROM generate_series(0, 9) AS g(i)
+
+# Verify data placement.
+query TTTI colnames,rowsort
+SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM TABLE data WITH DETAILS]
+ORDER BY 1
+----
+start_key           end_key       replicas  lease_holder
+<before:/Table/62>  …/1/1         {1}       1
+…/1/1               …/1/2         {2}       2
+…/1/2               …/1/3         {3}       3
+…/1/3               …/1/4         {4}       4
+…/1/4               …/1/5         {5}       5
+…/1/5               …/1/6         {1}       1
+…/1/6               …/1/7         {2}       2
+…/1/7               …/1/8         {3}       3
+…/1/8               …/1/9         {4}       4
+…/1/9               <after:/Max>  {5}       5
+
+query T
+EXPLAIN (DISTSQL) CREATE STATISTICS s1 ON a FROM data
+----
+distribution: full
+vectorized: false
+·
+• create statistics
+·
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJy0lVtvmzAUx9_3Kazz1EpGYCA3PzVqOwmptwUeJk1R5YbTFJVgZht1XZXvPjlZ1sIKSpDCAwIDv_Pz3xfeQP_MgcPl97uraXRDTi6iOIm_XZ2S89nlNLkkcTJNojiJzmOiGbm9IYJ8nd1ek1QYARQKmeKNWKEG_gMYUPCBQgAUQqAwgDmFUskFai2VfeVt80GU_gLuUciKsjK2eU5hIRUCfwOTmRyBQyIecpyhSFG5HlBI0Ygs35Sxpc_s6b58xlegcC7zalVoTqxRXAp76biMiCIljEjzhArmawqyMu8FtRFLBM4-GEYXwL013V8yFqsyR-UO6oLb5jj7jZwwz_Osf2yE4eSMtYr4DZFBq8h7_aqQKkWFaa3-fN2qOl0uFS6Fkcpl3v7S5MT3PPJQLZ7R6NPWLgSNLrB6mGz_EWc9Rtxljuv3GnN2iOZuzIdHGPNhTcTfPy-_T16-4wa98vIP0dzlNTpCXqOaSLB_XkGfvALHDXvlFRyiuctrfIS8xjWRcP-8wj55hY476JVXeIjmLq_JEfKaHPIzmKEuZaGxsRd_XslrVHKY3bQxXeJ2h9eyUgu8U3KxeXd7e7sBbRpS1Gb7lG1vomL3SBuFYvXvX_aRxDpJfo3EPpIGTZLf7XSIVNCJCttJrEkK-3Zv2CQNOknDdie_SRr2dRo1SaNO0rjdKWiSxn2dxk3SpHsaeO1S4X9zs3uad1hN7NJ5zOXLfZYCB-_v4Xxy2h1gPxBLbddv_CRfNtjktbSr71HkGilci2e8QINqlRWZNtkCuFEVrtdf_gQAAP__uYub4w==
+
+statement ok
+INSERT INTO data SELECT a, b, c::FLOAT, 1
+FROM generate_series(1,10) AS a, generate_series(1,10) AS b, generate_series(1,10) AS c;
+
+query T
+EXPLAIN ANALYZE (DISTSQL) CREATE STATISTICS s1 ON a FROM data
+----
+planning time: 10µs
+execution time: 100µs
+distribution: <hidden>
+vectorized: <hidden>
+rows decoded from KV: 1,000 (7.8 KiB, 2,000 KVs, 1,000 gRPC calls)
+maximum memory usage: <hidden>
+network usage: <hidden>
+regions: <hidden>
+·
+• create statistics
+·
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzsls9u2zgQxu_7FMScWkCOREr-p1OzbhcwijSFZfSyMApGmqqCZVFLUnCygR9rX2CfbCEpWluK5FpGDOQQHwyTHM98H-dHgo-g_orBhdni0_XyE_GW18u5t5zPPKIouf1COPljcXtDAq45GJCIAL_wDSpw_wQKBjAwwAYDHDBgCCsDUil8VErIPOSx-MM8uAfXMiBK0kzn0ysDfCER3EfQkY4RXFjyuxgXyAOUpgUGBKh5FBdl8tIf8q_v6RofwICZiLNNolySK_JSnv8cmJTwJCCUCP0TJRjw-RvR0QZdYv37jyrHvkg0JjoSybMlKbaKBOiLAAOXUMsqp-8eNCoikQcumVgW-b2cDhdfZ8TncawOYlMeySqWFZM332YzojSmxBdZosk7vNdmlOj3LrHMfQDiuiugkCUynWa6rLTaGVCOnzZSaR4iuPRg5-cfwbV2xumb7_FNGqM0h_WNL6e96G8saheWPM21Sz7QTiGsIWTYKWRfP0uEDFBiUKu_2nVKvQ5DiSHXQprUOl00eccsi9xl_hq1et9pwW5YoPXNpKeTTM8g2aQDk70gy6yNZXo1Ip-jFppZG83OJWhmPWimfRpQ0Ty6AM2jmhB2OgnsHBLYwLTfSKg1gPVpQEXC-AIkjGtC7NNJsM8hwR6YzhsJtQbYfRpQkTC5AAmTmhDndBKcc0hwBubwBUmw20hgV3Y7CXYbCaNLkGD3IMHp04CKhOkFSJj2eXQtUKUiUdh487RXshqVBjR_HGEQYvmSUiKTPn6Vwi9iy-FtkaiYCFDpcpWWg3lSLSktkW_-fzMeZqJHM7FaJnqYadjMxI5r6iPKPprK6c5Em5mcvvZ40RVIUG-FXJcnSWFSXFz5U69aKM9SubK_VavVDSrFw31ATvqhzlFT5_CozlG3Y9bMNHqdjsdNneOjOifdju1mpsnrdDxp6pwePyBWt2Xn2ak9fgH08mx3emZXzi88Dxuep_mV9SMW2-9RAC5YT59By1f1gfwPPFT5ven9FNtC9PIhzW-9HzxWaMANX-NH1Cg3URIpHfngapnhbvfbfwEAAP__s9NdEw==
+
+query T retry
+EXPLAIN (DISTSQL, TYPES) SELECT * FROM data
+----
+distribution: full
+vectorized: true
+·
+• scan
+  columns: (a int, b int, c float, d decimal)
+  estimated row count: 1,000 (100% of the table; stats collected <hidden> ago)
+  table: data@data_pkey
+  spans: FULL SCAN
+·
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklEFvmz4UwO__T2G903-TERjIDpw2NZmElKZZ4LBpiioXv6aogJlt1FUR330ydGtBSYWID5bs5_zeLw8_H0H_KiCC1fft-ku8If8v4yRNvq0pSX9sV8kHkqzWq6uUfCRfdzfXRHDDgUIlBW54iRqin8CAgg8UAqAQAoUF7CnUSmaotVT2yLH7QSx-Q-RRyKu6MXZ7TyGTCiE6gslNgRBByu8K3CEXqFwPKAg0PC-6NDb1Zzvd1o_4DBSuZNGUlY4Ip-SOkowSARSSmts9x2WEV4IwIs0DKti3FGRjXjNrww8IEXujGi8h8lp6xvZVsqmkEqhQDAXzygB9me8LyU0XzvKSF7BvT_zZjXRk7S4GlHOe_shzMfBk06vKLqmqyxzXn1VXNvD1p_v6F_n6jhvM8vUHvsF03-Ai38Bxw1m-wcA3nO4bXuQbOu5ilm94ts9O-O5Q17LSOKlTvFEmh9neQ3HAvou1bFSGWyWz7my_vOlA3YZAbfoo6xdx1YWYzaCQl_-eibck9i7p04DkvUvy5zqxMSmYS_LHpHAuKRiTFnNJof2K94V8us0FROC9DOfE9Hd07zA_aHuVkgf51GHT59peBKMapHDNH3GJBlWZV7k2edYH2va_PwEAAP__DBRFDg==
+
+subtest regression_98373
+
+statement ok
+CREATE TABLE IF NOT EXISTS t98373 AS
+        SELECT
+                g::INT2 AS _int2,
+                g::INT4 AS _int4,
+                g::INT8 AS _int8,
+                g::FLOAT8 AS _float8,
+                '2001-01-01'::DATE + g AS _date,
+                '2001-01-01'::TIMESTAMP + g * '1 day'::INTERVAL AS _timestamp
+        FROM
+                generate_series(1, 5) AS g;
+
+statement OK
+SET vectorize = off
+
+statement OK
+SET distsql = always
+
+# These query plans should be disallowed from executing in a distributed
+# fashion, even with distsql = always. Check different flavors of EXPLAIN.
+
+query T
+EXPLAIN SELECT
+        regproc(_int2::INT8)::REGPROC AS col865
+FROM
+        t98373@[0]
+----
+distribution: local
+vectorized: false
+·
+• render
+│
+└── • scan
+      missing stats
+      table: t98373@t98373_pkey
+      spans: FULL SCAN
+
+query T
+EXPLAIN(DISTSQL) SELECT
+        regproc(_int2::INT8)::REGPROC AS col865
+FROM
+        t98373@[0]
+----
+distribution: local
+vectorized: false
+·
+• render
+│
+└── • scan
+      missing stats
+      table: t98373@t98373_pkey
+      spans: FULL SCAN
+·
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyMkF9r2zAUxd_3KcR5akFh9sq2TE8tSTYMaZLZfhgUEzTr1hOVJU-S6Urwdx-20_1jg90HiftH5_6OTghfDQQ2nw7bm2zHLtZZURYft5es2Gw3q5J5ajrv6oujtvGVENmuXF4KkW8-HPL9it0UrHZm-eY1e5_vb1l8t7x6e3V9l1TgsE7RTrYUIO6QouIYhSgE58fSaRrI1DeIhEPbro9jueKonSeIE6KOhiBQys-GcpKK_MsEHIqi1GaSPS-cr2P3QE_gWDnTtzYINjGDo-jkmC7AkZNV5MUPW9fp2ROqgcP18SdGiLIhiPQX7mwNkQz8_9FzCp2zgX6j_tem5I9Ni3SoOEg1NP9XcL2v6eBdPc3O6X4SmgqKQpy76Zxk9rkVoifZzvgVx71xj0etIJCcY_GX4zkwPpBNGI0VX9zjJFs-dSPWvTSBOG7lA60pkm-11SHqGiL6nobhxfcAAAD__wgUvrk=
+
+statement OK
+RESET vectorize
+
+statement OK
+RESET distsql

@@ -1,0 +1,111 @@
+// Copyright 2022 The Cockroach Authors.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+@require nib
+@require "~styl/base/palette.styl"
+@require "~src/components/core/index.styl"
+
+$viz-bottom = 65px
+$viz-sides = 62px
+
+.anchor-light
+  color white
+  text-decoration underline
+  &:hover
+    color gray
+    text-decoration underline
+
+.linegraph
+  height 100%
+  .uplot
+    display flex
+    flex-direction column
+    > .u-legend
+      display none
+      position absolute
+      left 0
+      top 0
+      font-size 10px
+      background-color white
+      text-align left
+      margin-top 20px
+      z-index 100
+      pointer-events: none;
+      width: max-content;
+      border-radius: 5px
+      padding: 10px;
+      border 1px solid rgba(0,0,0,0.1)
+
+    // stick the legend to the char's bottom.
+    // Chart height is hardcoded to 300px (pkg/ui/src/views/cluster/util/graphs.ts)
+    > .u-legend.u-legend--place-bottom
+      position relative
+      top 0!important // Necessary because uPlot adds top/left on hover to make legend appear near mouse pointer
+      left 0!important // Necessary because uPlot adds top/left on hover to make legend appear near mouse pointer
+      width auto
+      margin-left -1px
+      margin-right -1px
+      padding-left 50px
+      // the first line in the legend represents Y-axis and it occupies an entire line
+      // to stand out from the rest of x-axis values
+      > tr:first-child
+        width 100%
+        font-size $font-size--small
+
+      > tr
+        min-width 30%
+
+  .u-legend:not(.u-legend--place-bottom)
+    .u-series
+      display block
+
+.no-data
+  width 100%
+  text-align center
+
+.linked-guideline__line
+  stroke $link-color
+
+.linegraph-empty
+  display flex
+  flex-direction column
+  align-items center
+  width inherit
+  min-height 300px
+  position relative
+  background-color #fff
+  color $headings-color
+  border-radius 5px
+  border 1px solid rgba(0, 0, 0, 0.1)
+  margin-bottom 10px
+  .body-empty
+    display flex
+    flex-direction column
+    align-items center
+    border-radius 8px
+    margin 6% 0
+    padding 5%
+    box-shadow 0px 4px 8px rgba(179, 185, 197, 0.3), 0px 0px 1px rgba(179, 185, 197, 0.47)
+    .body-text-empty
+      padding-top 3%
+      font-size 14px
+      font-weight 600
+      color $colors--neutral-9
+
+  .header-empty
+    display flex
+    justify-content center
+    align-items center
+    padding 15px 25px 0
+    .title-empty
+      font-size 14px
+      font-family $font-family--bold
+      color $body-color
+      border-bottom 1px dashed $colors--neutral-5
